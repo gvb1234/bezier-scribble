@@ -20,6 +20,8 @@ use Compress::Zlib;
 use MIME::Base64::Perl;
 use Text::CSV_XS qw( csv );
 #
+# end use section
+#
 #----------------------------------------------------------------
 
 
@@ -29,14 +31,12 @@ use Text::CSV_XS qw( csv );
 #             initialization
 #
 #
-
-my $firstrun=0;
 my $millimeter_width_for_export=0.9;   # linewidth in millimeters in pdf output
 my $mindistance=15;                    # will not record point that are closer than this to each other (in current path)
 
 my $maxdist = 3;                # if distance between mouse coordinates and current pointer position
                                 # is bigger than this, it means we are not reading the correct pointer
-my $pi=3.1415926;
+my $pi=3.1415926;               # lol
 my $debug=0;                    # will output some things if set to 1
 
 my $scale=1;                    # scaling of the image for zooming
@@ -52,19 +52,20 @@ my $predictY= undef;            # uses light intensity matrix derived from image
 
 my $circleradius;               # a slider (range) to set the radius between points
 my $degrees;                    # opening of sector where to look for new points
+my $linewidthslider;            # a slider for the linewidth
 
-my $pngname="big.png";        # this will be (optionally) set by an open dialog later...
-my $pdfname=$pngname;
+my $pngname="big.png";          # this will be (optionally) set by an open dialog later...
+my $pdfname=$pngname;           # name of the pdf file for output
 $pdfname=~ s/\.[\w\W]+/\.pdf/g;
 
-my ($background,$width,$height,$stride,$cformat);
+my ($width,$height,$stride,$cformat); # info about our background image (surface)
+
 my $window = undef;             # our main window
 my $table = undef;              # our main window's table
 my $drawing_area = undef;       # and this the drawing area
 my $ScrolledWindow = undef;     # container for drawing area
 
-
-my $oldstyle=0;                 # switching between modes is implemented by the buttons below
+my $oldstyle=0;                 # switching between modes is implemented by the buttons below.
                                 # unless $oldstyle is set to 1, the buttons are hidden
 
 my $btn_colormode = undef;     # There are two main modes: coloring
@@ -111,9 +112,8 @@ my @allY=();                 # and Y coordinates
 my @closed=();               # will contain flags to denote open or closed path
 my @colors=();               # will contain black/white flag or segments in our paths
 my $currentpath=0;           # index of path being currently modified
-my $currentpos=0;            # position of point being currently modified
+my $currentpos=0;            # index (position) of point being currently modified
 
-my $pixbuf;                  # hold the content of the png file
 my @intensity=();            # intensity matrix from png file
 
 $closed[0]=0;          # by default paths are open
@@ -121,13 +121,13 @@ push(@allX,[]);        # start populating the paths
 push(@allY,[]);        # and colors with
 push(@colors,[]);      # anonymous arrays
 
-my $keepsurface;
+my $keepsurface;       # the "surface" that will hold the data from the png file
+                       # we keep it in memory, so we don't need to reread the file later on
 
 # read the file once, get the details of the Cairo surface for later redrawing
 if(-e "$pngname"){
-  # our original surface
+  # our original surface from the png file
   $keepsurface = Cairo::ImageSurface->create_from_png($pngname);
-
 }else{
   # create an empty surface in case the png file does not exist
   $width=2350;
@@ -808,7 +808,8 @@ button-press-mask
 
 #           activating all input devices
 #
-#my @devices = Gtk3::Gdk->devices_list();
+#my @devices = Gtk3::Gdk::DeviceManager->list_devices();
+# gdk_device_manager_list_devices
 #for(my $i=0;$i<$#devices;$i++){
 #  if($debug==1){
 #    my $name=$devices[$i]->name;
@@ -971,6 +972,9 @@ scale_set_default_values($vscaledeg);
 $rangebox->pack_start($vscaledeg, TRUE, TRUE, 0);
 $vscaledeg->show;
 
+$linewidthslider = Gtk3::Adjustment->new(32.0,0.0, 100.0, 1.0, 1.0, 1.0);
+$linewidthslider->signal_connect(value_changed => \&set_linewidth_and_related);
+
 $rangebox->show;
 
 # add button box on right hand side, make it stick to the top
@@ -990,6 +994,26 @@ return $hbox;
 #     end createdrawingarea sub
 #
 #----------------------------------------------------------------
+
+sub set_linewidth_and_related{
+  # print "Debug:".$linewidthslider->get_value()."\n";
+  my $value=($linewidthslider->get_value()/100);
+  $value=0.1+2*$value+8*$value**3;
+  # main linewidth params
+  $millimeter_width_for_export=0.9*$value;
+  $millimeter_width=0.9*$value;
+  # other variables derived from those
+  $pwidth=$millimeter_width*$width/210;
+  $linewidth=$millimeter_width*$width/210;
+  $pointrad=$linewidth/4;
+  #
+  $longirange=$linewidth;
+  $latirange=$linewidth;
+  $minclosestdistance=$linewidth;
+
+
+  $drawing_area->queue_draw();
+}
 
 #----------------------------------------------------------------
 #
@@ -1044,8 +1068,8 @@ sub closestpositionbtn {
 
 #----------------------------------------------------------------
 #
-#  configure sub: redraw the surface from the variables
-#  set earlier.
+#  configure_event sub: redraw the surface from the variables
+#  set earlier. Useless and deprecated
 #
 #
 sub configure_event {
@@ -1079,10 +1103,11 @@ sub queue_drawing {
 #
 sub cairo_draw {
   my ( $widget, $context, $ref_status ) = @_;
-
+  # set the background
   $context->scale($scale,$scale);
   $context->set_source_surface($keepsurface,0,0);
   $context->paint();
+  # and now draw the contents
   redraw_all($context);
   return TRUE;
 }
@@ -1545,7 +1570,8 @@ reset_lastpoint();
 
 #----------------------------------------------------------------
 #
-#     export to pdf file, and also save points to gz file
+#     convert a path (=X array, Y array, Color array and Closed status
+#     into a string that can be eval'ed to recover those values
 #
 #
 sub path_to_string {
@@ -1562,74 +1588,82 @@ sub path_to_string {
   return $outX.$outY.$outcolor.$outclosed;
     
 }
+#
+#     end path_to_string sub
+#
+#----------------------------------------------------------------
 
+#----------------------------------------------------------------
+#
+#     export to pdf file, and also save points to gz file
+#
+#
 sub export{
 
-my $pointsfile=$pngname."_points_v1.gz";
-my $gz=gzopen($pointsfile,"wb");
-for (my $pathcount=0;$pathcount<$#allX+1;$pathcount++){
-  my @currentX=@{$allX[$pathcount]};
-  my @currentY=@{$allY[$pathcount]};
-  my @currentcolors=@{$colors[$pathcount]};
-  if($#currentX>0){ # keep path with at least 2 members
-    my $ldata=path_to_string(\@currentX,\@currentY,\@currentcolors,$closed[$pathcount]);    
-    $gz->gzwrite($ldata);
-    $gz->gzwrite("\n");
+  my $pointsfile=$pngname."_points_v1.gz";
+  my $gz=gzopen($pointsfile,"wb");
+  for (my $pathcount=0;$pathcount<$#allX+1;$pathcount++){
+    my @currentX=@{$allX[$pathcount]};
+    my @currentY=@{$allY[$pathcount]};
+    my @currentcolors=@{$colors[$pathcount]};
+    if($#currentX>0){ # keep path with at least 2 members
+      my $ldata=path_to_string(\@currentX,\@currentY,\@currentcolors,$closed[$pathcount]);    
+      $gz->gzwrite($ldata);
+      $gz->gzwrite("\n");
+    }
   }
-}
-$gz->gzwrite("\$currentpath=$currentpath;\n\$currentpos=$currentpos;\n");
-$gz->gzclose;
+  $gz->gzwrite("\$currentpath=$currentpath;\n\$currentpos=$currentpos;\n");
+  $gz->gzclose;
 
-# A4 paper has standard size 595x842 in whatever units
-my $pssurface = Cairo::PdfSurface->create ($pdfname, 595, 842);
+  # A4 paper has standard size 595x842 in whatever units
+  my $pssurface = Cairo::PdfSurface->create ($pdfname, 595, 842);
 
-# but in millimeters, the width is 210mm
-my $linewidth_for_export=$millimeter_width_for_export*595/210;
-my $pointrad=$linewidth/2;
+  # but in millimeters, the width is 210mm
+  my $linewidth_for_export=$millimeter_width_for_export*595/210;
+  my $pointrad=$linewidth/2;
 
-my ($pX,$pY)=ps_scale(\@allX,\@allY);
+  # scale all the points so they occupy a max of the A4 page
+  my ($pX,$pY)=ps_scale(\@allX,\@allY);
 
-my @cX=@$pX;
-my @cY=@$pY;
+  my @cX=@$pX;
+  my @cY=@$pY;
 
-# fill the page as white
-my $cr = Cairo::Context->create( $pssurface );
-$cr->set_source_rgba(1.0, 1.0, 1.0, 1);
-$cr->rectangle(0,0,595,842);
-$cr->fill;
+  # fill the page as white
+  my $cr = Cairo::Context->create( $pssurface );
+  $cr->set_source_rgba(1.0, 1.0, 1.0, 1);
+  $cr->rectangle(0,0,595,842);
+  $cr->fill;
 
-# switch linewidth to pdf linewidth
-my $linewidthkeep=$linewidth;
-$linewidth=$linewidth_for_export;
-$withpoints=0;
-for(my $i=0;$i<$#cX+1;$i++){
-  my $mX=$cX[$i];
-  my $mY=$cY[$i];
-  draw_curve($cr,$mX,$mY,$closed[$i],0,$colors[$i]);
-}
-$withpoints=1;
-# revert linewidth to UI value
-$linewidth=$linewidthkeep;
-
-
-$cr->show_page;
-$pssurface->flush;
-
-# need to do this so the pdf file is flushed ?????
-$cr=undef;
-$pssurface=undef;
-
-# open pdf file, works at least in linux, if okular is installed
-if($Config{osname} eq 'linux'){
-  my $okular=`which okular`;
-  if($okular !~ /Command not found./){
-    system("okular $pdfname");
+  # switch linewidth to pdf linewidth
+  my $linewidthkeep=$linewidth;
+  $linewidth=$linewidth_for_export;
+  $withpoints=0;
+  for(my $i=0;$i<$#cX+1;$i++){
+    my $mX=$cX[$i];
+    my $mY=$cY[$i];
+    draw_curve($cr,$mX,$mY,$closed[$i],0,$colors[$i]);
   }
-}else{
-# need to test this on window$
-  system("$pdfname");
-}
+  $withpoints=1;
+  # revert linewidth to UI value
+  $linewidth=$linewidthkeep;
 
+
+  $cr->show_page;
+  $pssurface->flush;
+
+  # need to do this so the pdf file is flushed ?????
+  $cr=undef;
+  $pssurface=undef;
+
+  # open pdf file, works at least in linux, if okular and which are installed
+  if($Config{osname} eq 'linux'){
+    my $okular=`which okular`;
+    if($okular !~ /Command not found./){
+      system("okular $pdfname");
+    }
+  }else{
+    system("$pdfname");
+  }
 }
 #
 #     end export sub
@@ -1640,77 +1674,116 @@ if($Config{osname} eq 'linux'){
 
 #----------------------------------------------------------------
 #
-#     create configure dialog. Will be a settings dialog later
-#     on, say to set linewidth with sliders (ranges?).
+#     create configure dialog.
 #
 #
 sub configure{
+  my $config = Gtk3::Window->new ();
+  # this is a child of our main window
+  $config->set_transient_for ($window);
+  $config->set_destroy_with_parent (TRUE);
+  
+  $config->set_title ("scribble settings");
+  $config->set_size_request(300,-1);
+  $config->signal_connect('key-press-event' => \&proc_key_destroy,$config);
 
-my $config = Gtk3::Window->new ();
-$config->set_title ("scribble settings");
-$config->set_size_request(300,-1);
-$config->signal_connect('key-press-event' => \&proc_key_destroy,$config);
+  # a box to hold our sliders and buttons
+  my $buttonbox = Gtk3::VBox->new (FALSE, 0);
+  $buttonbox->set_border_width(5);
+  $config->add($buttonbox);
 
-my $buttonbox = Gtk3::VBox->new (FALSE, 0);
-$buttonbox->set_border_width(5);
-$config->add($buttonbox);
+  #          Apply and Close button box
+  # my $firstbuttonbox = Gtk3::HBox->new (FALSE, 0);
+  # $firstbuttonbox->set_border_width(5);
 
-#          Apply and Close button box
-my $firstbuttonbox = Gtk3::HBox->new (FALSE, 0);
-$firstbuttonbox->set_border_width(5);
+  #          Input dialog
+  # my $btn_input = Gtk3::Button->new ("_Input Dialog");
+  # $btn_input->set_size_request(1.5*$buttonwidth,$buttonheight);
+  # $btn_input->signal_connect (clicked => \&create_input_dialog, $config);
+  # $btn_input->show;
 
-#          Input dialog
-my $btn_input = Gtk3::Button->new ("_Input Dialog");
-$btn_input->set_size_request(1.5*$buttonwidth,$buttonheight);
-$btn_input->signal_connect (clicked => \&create_input_dialog, $config);
-$btn_input->show;
+  #my $haligna=Gtk3::Alignment->new(0,0,0,0);
+  #$haligna->add($firstbuttonbox);
+  #$firstbuttonbox->add($btn_input);
 
-my $haligna=Gtk3::Alignment->new(0,0,0,0);
-$haligna->add($firstbuttonbox);
-$firstbuttonbox->add($btn_input);
+  #$buttonbox->add($haligna);
 
-$buttonbox->add($haligna);
+  #          a frame to hold the sector/circle radius slider
+  my $circleframe = Gtk3::Frame->new('Sector/Circle radius:');
+  $circleframe->set_border_width(1);
+  #          a vbox to pack in the frame
+  my $vbox_circle = Gtk3::VBox->new(TRUE,0);
+  $vbox_circle->set_border_width(1);
+  #          and a scale to pack in the vbox
+  my $hscale = Gtk3::HScale->new($circleradius);
+  $hscale->set_size_request(200,40);
+  scale_set_default_values($hscale);
+  $hscale->set_value_pos('bottom');
+  $vbox_circle->add($hscale);
+  $hscale->show;
+  $circleframe->add($vbox_circle);
 
+  #          a frame to hold the sector/circle opening slider
+  my $sectorframe = Gtk3::Frame->new('Sector opening (in degrees):');
+  $sectorframe->set_border_width(1);
+  #          a vbox to pack in the frame
+  my $vbox_sector = Gtk3::VBox->new(TRUE,0);
+  $vbox_sector->set_border_width(1);
+  #          and a scale to pack in the vbox
+  $hscale = Gtk3::HScale->new($degrees);
+  $hscale->set_size_request(200,40);
+  scale_set_default_values($hscale);
+  $hscale->set_value_pos('bottom');
+  $vbox_sector->add($hscale);
+  $hscale->show;
+  $sectorframe->add($vbox_sector);
 
-my $circleframe = Gtk3::Frame->new('Circle radius:');
-#$circleframe->set_size_request($framewidth,4*$buttonheight);
-$circleframe->set_border_width(1);
-my $vbox_circle = Gtk3::VBox->new(TRUE,0);
-$vbox_circle->set_border_width(1);
+  #          a frame to hold the slinewidth slider
+  my $linewidthframe = Gtk3::Frame->new('Linewidth:');
+  #          a vbox to pack in the frame
+  $linewidthframe->set_border_width(1);
+  my $vbox_linewidth = Gtk3::VBox->new(TRUE,0);
+  $vbox_linewidth->set_border_width(1);
+  #          and a scale to pack in the vbox
+  $hscale = Gtk3::HScale->new($linewidthslider);
+  $hscale->set_size_request(200,40);
+  scale_set_default_values($hscale);
+  $hscale->set_value_pos('bottom');
+  $vbox_linewidth->add($hscale);
+  $hscale->show;
+  $linewidthframe->add($vbox_linewidth);
 
-my $hscale = Gtk3::HScale->new($circleradius);
-$hscale->set_size_request(200,40);
-scale_set_default_values($hscale);
-$hscale->set_value_pos('bottom');
-$vbox_circle->add($hscale);
-$hscale->show;
-$circleframe->add($vbox_circle);
+  #          add all three frames with sliders to the buttonbox
+  $buttonbox->add($circleframe);
+  $buttonbox->add($sectorframe);
+  $buttonbox->add($linewidthframe);
 
-$buttonbox->add($circleframe);
+  #          Apply and Close button box
+  my $lastbuttonbox = Gtk3::HBox->new (FALSE, 0);
+  $lastbuttonbox->set_border_width(5);
 
-#          Apply and Close button box
-my $lastbuttonbox = Gtk3::HBox->new (FALSE, 0);
-$lastbuttonbox->set_border_width(5);
+  #          Close button
+  my $btn_quit = Gtk3::Button->new_from_stock('gtk-close');
+  $btn_quit->signal_connect_swapped (clicked => sub { $_[0]->destroy; }, $config);
 
-#          Close button
-my $btn_quit = Gtk3::Button->new_from_stock('gtk-close');
-$btn_quit->signal_connect_swapped (clicked => sub { $_[0]->destroy; }, $config);
+  #          Apply button not needed as we redraw as the sliders move
+  #          if we need to, we could connect it to something and use it
+  my $btn_apply = Gtk3::Button->new_from_stock('gtk-apply');
+  
 
-#          Apply button
-my $btn_apply = Gtk3::Button->new_from_stock('gtk-apply');
-# will need to connect this to something ;-)
+  my $halign=Gtk3::Alignment->new(1,0,0,0);
+  $halign->add($lastbuttonbox);
+  $lastbuttonbox->add($btn_apply);
+  $lastbuttonbox->add($btn_quit);
 
-my $halign=Gtk3::Alignment->new(1,0,0,0);
-$halign->add($lastbuttonbox);
-$lastbuttonbox->add($btn_apply);
-$lastbuttonbox->add($btn_quit);
+  my $valign=Gtk3::Alignment->new(1,1,0,0);
+  $valign->add($halign);
 
-my $valign=Gtk3::Alignment->new(1,1,0,0);
-$valign->add($halign);
+  $buttonbox->add($valign);
 
-$buttonbox->add($valign);
-
-$config->show_all;
+  $config->show_all;
+  # hide the apply button for now
+  $btn_apply->hide;
 
 }
 #
@@ -1905,7 +1978,7 @@ sub proc_key {
     zoomout();
   }
 
-  # start new path, mark current one open
+  # start new path, mark current one as open
   if($key_val == Gtk3::Gdk::KEY_n){
 
     $closed[$currentpath]=0;
@@ -1928,7 +2001,7 @@ sub proc_key {
     return TRUE;
   }
 
-  # start new path, mark current one closed
+  # start new path, mark current one as closed
   if($key_val == Gtk3::Gdk::KEY_c){
 
     $closed[$currentpath]=1;
@@ -1951,13 +2024,15 @@ sub proc_key {
     return TRUE;
   }
 
+  # adjust the next point clicked to the "best" close point according to intensity
   if($key_val == Gtk3::Gdk::KEY_a){
-
+    # we are moving a point, so we need to be in move mode and select path
     $btn_movmode->set_active(TRUE);
     $btn_selectpath->set_active(TRUE);
     update_statusbar();
     update_toolbar();
     if($#intensity==-1){
+      # just in case we do not have an intensity matrix yet
       @intensity=make_intensity_matrix($keepsurface);
     }
 
@@ -2151,6 +2226,7 @@ my ($widget)=@_;
 sub redraw_all {
   my ($cr)=@_;
 
+  # draw all the curves first
   for(my $i=0;$i<$#allX+1;$i++){
     my $currentflag=0;
     if($i==$currentpath){
@@ -2166,6 +2242,7 @@ sub redraw_all {
     my @locY=@{$allY[$currentpath]};
     if($#locX>-1){
       my $circrad=$circleradius->get_value;
+      # get the coordinates of the current point
       my ($cx,$cy);
       if($btn_addmode->get_active){
         ($cx,$cy)=($allX[$currentpath][$currentpos-1],$allY[$currentpath][$currentpos-1]);
@@ -2175,27 +2252,31 @@ sub redraw_all {
       }
       
       if(($#locX==0) && ($btn_addmode->get_active)){
+        # there is only one point in our path
         $cr->set_source_rgba(0.3,0.3,0.3,1);
         $cr->set_line_width($linewidth/4);
         $cr->arc ($cx,$cy,$circrad,0,2*$pi);
         $cr->stroke;
         
         
-        
+        # how far to look around
         my $delta=sprintf('%.0f',1.4*max($latirange,$longirange));
 
         my $maxwei=0;
         my ($bestX,$bestY);
         for(my $deg=0;$deg<361;$deg++){
-
+          # a circle around our current point
           my $rX=sprintf('%.0f',$cx+$circrad*cos($deg/180*$pi));
           my $rY=sprintf('%.0f',$cy+$circrad*sin($deg/180*$pi));
+          # tangent vector to the circle
           my $u=cos(($deg/180-1/2)*$pi);
           my $v=sin(($deg/180-1/2)*$pi);
 
+          # compute weighted average with intensity
           my ($mX,$mY,$wei)=(0,0,0);
           for(my $i=max($rX-$delta,0);$i<min($rX+$delta+1,$width);$i++){
             for(my $j=max($rY-$delta,0);$j<min($rY+$delta+1,$height);$j++){
+              # weight of current point, cut to 0 outside of interesting region
               my $fac=laticut((-$v*($i-$rX)+$u*($j-$rY)),$latirange)*longicut(($u*($i-$rX)+$v*($j-$rY)),$longirange);
 
               $mX+=$intensity[$j][$i]*$i*$fac;
@@ -2205,14 +2286,18 @@ sub redraw_all {
           }
 
           if($wei>$maxwei){
+            # this point has a higher intensity than met before, so we record it
             $maxwei=$wei;
             $bestX=$mX/$wei;
             $bestY=$mY/$wei;
           }
         }
         if($maxwei>0){
+          # there was at least a point with a positive intensity
+          # so we plot it (in gray)
           $cr->arc ($bestX,$bestY,3*$pointrad,0,2 * $pi);
           $cr->fill;
+          # and we set it as our next predicted point
           $predictX=$bestX;
           $predictY=$bestY;
         }
@@ -2224,7 +2309,7 @@ sub redraw_all {
       
       }
       if($#locX>0){
-
+        # our curve has several points
         my ($rfcpX,$rfcpY,$rscpX,$rscpY);
         if($closed[$currentpath]==1){
           ($rfcpX,$rfcpY,$rscpX,$rscpY)=GetCurveControlPointsClosed(\@locX,\@locY);
@@ -2235,6 +2320,7 @@ sub redraw_all {
         my @fcpX=@{$rfcpX};
         my @fcpY=@{$rfcpY};
         if($currentpos<$#locX+1){
+          # tangent direction to the curve
           $tX=$fcpX[$currentpos];
           $tY=$fcpY[$currentpos];
           if(($btn_movmode->get_active) && ($currentpos==$#locX) && ($closed[$currentpath]==0)){
@@ -2260,41 +2346,52 @@ sub redraw_all {
         }
 
         if($btn_addmode->get_active){
+          # change the pen color to light gray and small linewidth
           $cr->set_source_rgba(0.3,0.3,0.3,1);
           $cr->set_line_width($linewidth/4);
 
+          # end of vector starting at current point, tangent to curve there and of length $circrad
           my $len=sqrt(($tX-$cx)*($tX-$cx)+($tY-$cy)*($tY-$cy));
           $tX=$cx+($tX-$cx)/$len*$circrad;
           $tY=$cy+($tY-$cy)/$len*$circrad;
 
+          # angle of said vector wrt x-axis
           my $angle=atan2($tY-$cy,$tX-$cx);
           my $deg=$degrees->get_value;
 
+          # draw the opening of the sector (pie slice)
           $cr->move_to($cx,$cy);
           $cr->line_to($cx+$circrad*cos($angle+$deg/180*$pi),$cy+$circrad*sin($angle+$deg/180*$pi));
           $cr->stroke;
           $cr->move_to($cx,$cy);
           $cr->line_to($cx+$circrad*cos($angle-$deg/180*$pi),$cy+$circrad*sin($angle-$deg/180*$pi));
           $cr->stroke;
-
+ 
+          # draw the boundary of the sector
           $cr->arc ($cx,$cy,$circrad,$angle-$deg/180*$pi,$angle+$deg/180*$pi);
           $cr->stroke;
 
-          # flucca
-
+          
+          # start to look for best point along the sector's boundary
+          # how far to look around
           my $delta=sprintf('%.0f',1.4*max($latirange,$longirange));
+
+          # sector opening
           my $maxang=$degrees->get_value;
 
+          # we'll look for 100=2*50 different angle values
           my $maxdeg=50;
           my $maxwei=0;
           my ($bestX,$bestY);
           for(my $deg=-$maxdeg;$deg<$maxdeg+1;$deg++){
-
+            # a point on the sector
             my $rX=sprintf('%.0f',$cx+$circrad*cos($angle+($maxang*$deg/$maxdeg/180)*$pi));
             my $rY=sprintf('%.0f',$cy+$circrad*sin($angle+($maxang*$deg/$maxdeg/180)*$pi));
+            # and its corresponding tangent vector
             my $u=cos($angle+($maxang*$deg/$maxdeg/180-1/2)*$pi);
             my $v=sin($angle+($maxang*$deg/$maxdeg/180-1/2)*$pi);
 
+            # compute intensity weighted average around the point on the sector
             my ($mX,$mY,$wei)=(0,0,0);
             for(my $i=max($rX-$delta,0);$i<min($rX+$delta+1,$width);$i++){
               for(my $j=max($rY-$delta,0);$j<min($rY+$delta+1,$height);$j++){
@@ -2307,20 +2404,25 @@ sub redraw_all {
             }
 
             if($wei>$maxwei){
+              # this point has a higher intensity than met before, so we record it
               $maxwei=$wei;
               $bestX=$mX/$wei;
               $bestY=$mY/$wei;
             }
           }
           if($maxwei>0){
+            # there was at least a point with a positive intensity
+            # so we plot it (in gray)
             $cr->arc ($bestX,$bestY,3*$pointrad,0,2 * $pi);
             $cr->fill;
+            # and we set it as our next predicted point
             $predictX=$bestX;
             $predictY=$bestY;
           }
         }
 
         if($btn_movmode->get_active){
+          # if we are moving mode, we draw a rectangle around the current point (but, why?)
           my $u=($tX-$cx);
           my $v=($tY-$cy);
           my $len=sqrt($u*$u+$v*$v);
@@ -2344,7 +2446,7 @@ sub redraw_all {
 
     }
   }
-
+  # display the page
   $cr->show_page;
 }
 #
@@ -2533,7 +2635,7 @@ my @colors=@$pcolors;
       $cr->set_source_rgba(0.0, 0.0, 0.0, 1);
     }
 
-    # white segments are drawn in gray on screen (so we know where they are)
+    # white segments are drawn in gray with half linewidth on screen (so we know where they are)
     $cr->set_line_width($linewidth);
     if($withpoints==1){
       if($colors[min($#colors,$i+1)]==0){
@@ -2551,7 +2653,7 @@ my @colors=@$pcolors;
   }
 
 
-  # if we draw on screen, we add points so we can move them later
+  # if we draw on screen, we add points so we can identify them later (to move or delete, for instance)
   if($withpoints==1){
     $cr->set_source_rgba(1.0, 0.0, 0.0, 1);
     for(my $i=0;$i<$#X+1;$i++){
@@ -2844,11 +2946,12 @@ sub show_chooser {
 #* 'create-folder'
     my $file_chooser =  Gtk3::FileChooserDialog->new (
                             $heading,
-                            undef,
+                            $window,
                             $type,
                             'gtk-cancel' => 'cancel',
                             'gtk-ok' => 'ok'
                         );
+
     (defined $filter)&&($file_chooser->add_filter($filter));
 
     #if action = 'save' suggest a filename
@@ -2873,6 +2976,7 @@ sub show_chooser {
         }
         if($type eq 'save'){
           $pdfname=$filename;
+          # export to pdf, save the paths
           export();
         }
         if($type eq 'open'){
@@ -2880,9 +2984,9 @@ sub show_chooser {
           $pdfname=$pngname;
           $pdfname=~ s/\.[\w\W]+/\.pdf/g;
 
-
+          # create our surface to hold the contents of the png file
           $keepsurface= Cairo::ImageSurface->create_from_png($pngname);
-          
+          # keep track of its size          
           $width=$keepsurface->get_width;
           $height=$keepsurface->get_height;
           $stride=$keepsurface->get_stride;
@@ -2896,12 +3000,16 @@ sub show_chooser {
           $scale=1;
 
           $drawing_area->set_size_request ($width*$scale,$height*$scale);
-
+          
+          # import paths and intensity matrix from previous runs if they exist
           myimport();
+
           if($#intensity==-1){
+            # compute intensity matrix if not already done
             @intensity=make_intensity_matrix($keepsurface);
           }
 
+          # schedule the drawing
           $drawing_area->queue_draw();
         }
     }
@@ -3428,14 +3536,18 @@ sub update_toolbar {
 #     compute intensity matrix
 #
 sub make_intensity_matrix{
+  # get the data
   my ($pixbuf)=@_;
   my $pixels=$pixbuf->get_data();
+  # how many colors per pixel (rgb or rgba)
   my $depth = $pixbuf->get_stride/$pixbuf->get_width;
+  # this will hold the intensity
   my @matrix=();
   my $height=$pixbuf->get_height();
+  # length of one raw of data
   my $rowstride=$pixbuf->get_stride();
 
-
+  # hide the status bar to display a progressbar instead
   $statusbar->hide;
 
   my $vbox = Gtk3::VBox->new(FALSE,0);
@@ -3452,27 +3564,31 @@ sub make_intensity_matrix{
   $ProgressBar->set_text('computing intensity matrix, please wait...');
   $ProgressBar->set_show_text(TRUE);
 
-#  $window->{ProgressBar} = $ProgressBar;
+# add the progress bar to the alignment object
   $align->add($ProgressBar);
   $ProgressBar->show;
   $vbox->show_all;
 
+# add the vbox to the main table
   $table->attach ($vbox,0,1,3,4,[qw/expand fill/],[],0,0);
 
   my $size=$window->size_request();
   $ProgressBar->set_size_request($size->width-12,20);
 
   for(my $row=0;$row<$height;$row++){
-
+    # go over the rows of data
     $ProgressBar->set_fraction($row/($height-1));
     Glib::MainContext->default->iteration(FALSE);
-
+    
+    # add an anonymous array
     push(@matrix,[]);
+    # get (unpack) the current row of data
     my $offset = $row * ($rowstride) ;
     my @line=unpack "C*",substr $pixels, $offset, $rowstride+1;
 
     my $intensity=0;
     my $dc=0;
+    # add together the rgb/rgba value for each pixel
     foreach my $color (@line){
       $dc=$dc+1;
       if($dc<=$depth){
@@ -3486,10 +3602,15 @@ sub make_intensity_matrix{
     }
   }
 
-
+  # save the matrix to a (space-separated) csv file
   csv (in => \@matrix, out => $pngname."_intensity",sep_char=> " ");
-
-  print_matrix(\@matrix);
+  
+  if ($debug==1){
+    # print the intensity matrix to a matrix_matlab.m file
+    # that can be used to display a contour plot to check 
+    # the above is reasonable
+    print_matrix(\@matrix);
+  }
 
   $vbox->hide;
   $statusbar->show;
@@ -3501,10 +3622,14 @@ sub make_intensity_matrix{
 #
 #----------------------------------------------------------------
 
+#----------------------------------------------------------------
+#
+#     print intensity matrix to matlab file for debugging
+#
 sub print_matrix{
   my ($ma)=@_;
   my @matrix=@{$ma};
-  open(TXT,">test.m");
+  open(TXT,">matrix_matlab.m");
   print TXT "a=[";
   for(my $i=0;$i<$#matrix+1;$i++){
     my @line=@{$matrix[$i]};
@@ -3517,6 +3642,10 @@ sub print_matrix{
   print TXT "contour(a(end:-1:1,1));";
   close(TXT);
 }
+#
+#     end print_matrix sub
+#
+#----------------------------------------------------------------
 
 
 #----------------------------------------------------------------
