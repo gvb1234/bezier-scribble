@@ -31,6 +31,19 @@ use Text::CSV_XS qw( csv );
 #             initialization
 #
 #
+if($Config{osname} eq 'linux'){
+  # linux specific initialization
+  
+}else{
+  # windows specific initialization 
+  
+  # use native window decorations
+  $ENV{'GTK_CSD'}=0;
+  $ENV{'GTK_THEME'}='Breeze';
+}
+
+
+
 my $millimeter_width_for_export=0.9;   # linewidth in millimeters in pdf output
 my $mindistance=15;                    # will not record point that are closer than this to each other (in current path)
 
@@ -51,8 +64,11 @@ my $predictX= undef;            # coordinates predicted for next point
 my $predictY= undef;            # uses light intensity matrix derived from image
 
 my $circleradius;               # a slider (range) to set the radius between points
-my $degrees;                    # opening of sector where to look for new points
+my $circleradius_default=150;   # and its default value
+my $degrees;                    # slider for opening of sector where to look for new points
+my $degrees_default=30;         # and its default value
 my $linewidthslider;            # a slider for the linewidth
+my $linewidth_default=32;       # and its default value
 
 my $pngname="big.png";          # this will be (optionally) set by an open dialog later...
 my $pdfname=$pngname;           # name of the pdf file for output
@@ -310,6 +326,9 @@ $ui_info_toolbar_colormode = "<ui>
 {
 Gtk3->init;
 
+# setup the sliders for the circle/sector radius, sector opening and linewidth
+sliders_setup();
+
 # set our icons into stock so they can be called as stock elements and/or themed later
 register_stock_icons ();
 
@@ -419,6 +438,61 @@ sub quitapp {
 #
 #
 #         end quitapp sub
+#
+#----------------------------------------------------------------
+
+#----------------------------------------------------------------
+#
+#
+#         setup the range/sliders/adjustment for the 
+#         circle/sector radius, sector opening and linewidth
+#
+#
+sub sliders_setup {
+
+# syntax for Gtk3::Adjustment is
+# value, lower, upper, step_increment, page_increment, page_size
+# Note that the page_size value only makes a difference for
+# scrollbar widgets, and the highest value you'll get is actually
+# (upper - page_size).
+
+  $circleradius = Gtk3::Adjustment->new($circleradius_default, $mindistance, 301.0, 1.0, 1.0, 1.0);
+  $circleradius->signal_connect(value_changed => \&queue_drawing);
+  $degrees = Gtk3::Adjustment->new($degrees_default, 0, 91.0, 1.0, 1.0, 1.0);
+  $degrees->signal_connect(value_changed => \&queue_drawing);
+  $linewidthslider = Gtk3::Adjustment->new($linewidth_default,0.0, 100.0, 1.0, 1.0, 1.0);
+  $linewidthslider->signal_connect(value_changed => \&set_linewidth_and_related);
+
+  # since the linewidth default might have changed, reset the linewidth and derived params
+  set_linewidth_and_related();
+
+}
+#
+#
+#         end sliders_setup sub
+#
+#----------------------------------------------------------------
+
+
+#----------------------------------------------------------------
+#
+#
+#         set sliders for circle/sector radius, sector opening 
+#         and linewidth to default values
+#         
+#
+#
+sub sliders_set_to_defaults {
+  $circleradius->set_value(150);
+  $degrees->set_value(30);
+  $linewidthslider->set_value(32);
+
+  # since the linewidth default might have changed, reset the linewidth and derived params
+  set_linewidth_and_related();
+}
+#
+#
+#         end sliders_setup sub
 #
 #----------------------------------------------------------------
 
@@ -950,30 +1024,19 @@ $buttonbox->add($newpathframe);
 # range box
 my $rangebox = Gtk3::VBox->new(FALSE, 0);
 
-# value, lower, upper, step_increment, page_increment, page_size
-# Note that the page_size value only makes a difference for
-# scrollbar widgets, and the highest value you'll get is actually
-# (upper - page_size).
-$circleradius = Gtk3::Adjustment->new(150.0, $mindistance, 301.0, 1.0, 1.0, 1.0);
-$circleradius->signal_connect(value_changed => \&queue_drawing);
-
+# attach the circleradius scale
 my $vscale = Gtk3::VScale->new($circleradius);
 $vscale->set_size_request(40,200);
 scale_set_default_values($vscale);
 $rangebox->pack_start($vscale, TRUE, TRUE, 0);
 $vscale->show;
 
-$degrees = Gtk3::Adjustment->new(30.0, 0, 90.0, 1.0, 1.0, 1.0);
-$degrees->signal_connect(value_changed => \&queue_drawing);
-
+# attach the degrees scale
 my $vscaledeg = Gtk3::VScale->new($degrees);
 $vscaledeg->set_size_request(40,200);
 scale_set_default_values($vscaledeg);
 $rangebox->pack_start($vscaledeg, TRUE, TRUE, 0);
 $vscaledeg->show;
-
-$linewidthslider = Gtk3::Adjustment->new(32.0,0.0, 100.0, 1.0, 1.0, 1.0);
-$linewidthslider->signal_connect(value_changed => \&set_linewidth_and_related);
 
 $rangebox->show;
 
@@ -1005,14 +1068,14 @@ sub set_linewidth_and_related{
   # other variables derived from those
   $pwidth=$millimeter_width*$width/210;
   $linewidth=$millimeter_width*$width/210;
-  $pointrad=$linewidth/4;
-  #
+  $pointrad=$linewidth/4;  
   $longirange=$linewidth;
   $latirange=$linewidth;
   $minclosestdistance=$linewidth;
-
-
-  $drawing_area->queue_draw();
+  # schedule a redraw if the drawing area exists (that is, we got called by moving the linewidth slider)
+  if (defined $drawing_area){
+    $drawing_area->queue_draw();
+  }
 }
 
 #----------------------------------------------------------------
@@ -1612,7 +1675,15 @@ sub export{
       $gz->gzwrite("\n");
     }
   }
+  # keep track of the current path and current position
   $gz->gzwrite("\$currentpath=$currentpath;\n\$currentpos=$currentpos;\n");
+  # keep track of the circle/sector radiue, the sector opening and the linewidth
+  my $def_val=$circleradius->get_value();
+  $gz->gzwrite("\$circleradius_default=$def_val\n");
+  $def_val=$degrees->get_value();
+  $gz->gzwrite("\$degrees_default=$def_val\n");
+  $def_val=$linewidthslider->get_value();
+  $gz->gzwrite("\$linewidth_default=$def_val;\n");
   $gz->gzclose;
 
   # A4 paper has standard size 595x842 in whatever units
@@ -1766,14 +1837,18 @@ sub configure{
   my $btn_quit = Gtk3::Button->new_from_stock('gtk-close');
   $btn_quit->signal_connect_swapped (clicked => sub { $_[0]->destroy; }, $config);
 
-  #          Apply button not needed as we redraw as the sliders move
-  #          if we need to, we could connect it to something and use it
+  #          Apply button not needed as we redraw as the sliders move.
+  #          If we need to, we could connect it to something and use it.
   my $btn_apply = Gtk3::Button->new_from_stock('gtk-apply');
   
+  #          "Default values" button resets to the hardwired default values.
+  my $btn_reset = Gtk3::Button->new_with_label('default values');
+  $btn_reset->signal_connect(clicked => \&sliders_set_to_defaults, $config);
 
   my $halign=Gtk3::Alignment->new(1,0,0,0);
   $halign->add($lastbuttonbox);
   $lastbuttonbox->add($btn_apply);
+  $lastbuttonbox->add($btn_reset);
   $lastbuttonbox->add($btn_quit);
 
   my $valign=Gtk3::Alignment->new(1,1,0,0);
@@ -1782,7 +1857,8 @@ sub configure{
   $buttonbox->add($valign);
 
   $config->show_all;
-  # hide the apply button for now
+
+  # hide the apply button for now, as it is not connected anyway.
   $btn_apply->hide;
 
 }
@@ -3003,6 +3079,9 @@ sub show_chooser {
           
           # import paths and intensity matrix from previous runs if they exist
           myimport();
+          # we might have changed default values during setup, so we set our sliders
+          # to the new values (if needed).
+          sliders_setup();
 
           if($#intensity==-1){
             # compute intensity matrix if not already done
