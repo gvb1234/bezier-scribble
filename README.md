@@ -41,3 +41,6 @@ Also, up to that point, I had never written a GUI app, so I wanted to learn. I h
 
 I ported this to python3 a while ago. Code is much cleaner in python...
 
+# ToDo
+
+Something I always wanted to do is to pick colors from the original file to draw the lines and/or fill the curves/polygons. Part of the code is there (the color picker, for instance). I never found the time to do it though.
