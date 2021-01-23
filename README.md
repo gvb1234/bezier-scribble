@@ -1,6 +1,6 @@
 # Summary
 
-A perl+gtk3 app to vectorize scanned simple drawings using nice looking Bezier curves.
+A perl+gtk3 / python3+gtk3 app to vectorize scanned simple drawings using nice looking Bezier curves.
 
 # Description
 
@@ -37,4 +37,7 @@ I did this a long time ago. My young daughter would always ask (bug) me to print
 
 Also, up to that point, I had never written a GUI app, so I wanted to learn. I have no idea why I did it in perl+Gtk2 (at the time) and not in python, but, here it is, finally ported to Gtk3 and significantly cleaned up.
 
+# Update
+
+I ported this to python3 a while ago. Code is much cleaner in python...
 
