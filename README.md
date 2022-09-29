@@ -33,7 +33,7 @@ The radius and opening of the predicting cone can be adjusted by sliders on the 
 
 # Background
 
-I did this a long time ago. My young daughter would always ask (bug) me to print "coloring" pages from the internet. These often come in poor quality (lotsa pixels can be seen). So I wanted to replace them with vector graphics curves. It turns out the mathematics of Bezier curves for for doing this is fun.
+I did this a long time ago. My young daughter would always ask (bug) me to print "coloring" pages from the internet. These often come in poor quality (lotsa pixels can be seen). So I wanted to replace them with vector graphics curves. It turns out the mathematics of Bezier curves for doing this is fun.
 
 Also, up to that point, I had never written a GUI app, so I wanted to learn. I have no idea why I did it in perl+Gtk2 (at the time) and not in python, but, here it is, finally ported to Gtk3 and significantly cleaned up.
 
